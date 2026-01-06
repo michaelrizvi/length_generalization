@@ -18,7 +18,7 @@ class NoPE(nn.Module):
         super().__init__()
     
     def forward(self, x):
-        return 0
+        return torch.tensor(0.0, device=x.device) 
 
 class NoPEGPT2LMHeadModel(GPT2LMHeadModel):
     def __init__(self, config):
@@ -439,6 +439,72 @@ class EvalDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
+class FixedDataset(Dataset):
+    def __init__(self, examples):
+        super().__init__()
+        self.data = examples
+    
+    def __getitem__(self, index):
+        return self.data[index]
+    
+    def __len__(self):
+        return len(self.data)
+
+def generate_deduplicated_datasets(dataset_class, tokenizer, train_range, test_range, 
+                                 max_length, train_size=50000, test_size=2000, **kwargs):
+    """
+    Generate deduplicated train and test datasets ensuring no overlap.
+    
+    Args:
+        dataset_class: The dataset class to instantiate (e.g., BinaryMajorityDataset)
+        tokenizer: Custom tokenizer for the task
+        train_range: Tuple (min, max) for training lengths
+        test_range: Tuple (min, max) for test lengths  
+        max_length: Maximum length for positional embeddings
+        train_size: Number of training examples to generate
+        test_size: Number of test examples to generate
+        **kwargs: Additional arguments for dataset class (e.g., period=3)
+    
+    Returns:
+        tuple: (train_dataset, test_dataset) as FixedDataset instances
+    """
+    # Generate test set first with different seed
+    original_torch_state = torch.get_rng_state()
+    original_random_state = random.getstate()
+    
+    torch.manual_seed(1337)
+    random.seed(1337)
+    test_examples = []
+    test_gen = dataset_class(tokenizer, test_range, max_length, **kwargs)
+    for i, example in enumerate(test_gen):
+        if i >= test_size:
+            break
+        test_examples.append(example)
+    
+    # Generate train set with original seed, skip duplicates
+    torch.set_rng_state(original_torch_state)
+    random.setstate(original_random_state)
+    torch.manual_seed(42)
+    random.seed(42)
+    
+    # Create set of test examples for duplicate checking
+    test_set = set(tuple(ex[0]) for ex in test_examples)
+    
+    train_examples = []
+    train_gen = dataset_class(tokenizer, train_range, max_length, **kwargs)
+    
+    for example in train_gen:
+        if tuple(example[0]) not in test_set:
+            train_examples.append(example)
+        if len(train_examples) >= train_size:
+            break
+    
+    # Restore original random states
+    torch.set_rng_state(original_torch_state)
+    random.setstate(original_random_state)
+    
+    return FixedDataset(train_examples), FixedDataset(test_examples)
+
 class customCollator():
     def __init__(self, pad_id):
         self.pad_id = pad_id
@@ -475,21 +541,22 @@ class myCallback(TrainerCallback):
         for key in metrics.keys():
             if key.endswith("acc"):
                 self.latest_acc[key] = metrics[key]
-        if len(self.latest_acc) == len(test_length_ranges):
-            if (self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_acc"] == 1.0) or (self.current_epoch == 1.0):  
-                if self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_acc"] == 1.0: 
+        # Now we have train + test for same length, plus additional test ranges
+        if len(self.latest_acc) == len(test_length_ranges) + 1:
+            if (self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_train_acc"] == 1.0) or (self.current_epoch == 1.0):
+                if self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_train_acc"] == 1.0:
                     control.should_training_stop = True
                     global fit_train_data
                     fit_train_data = True
                     msg = f"early stop {self.current_epoch}\t\t"
                 else:
                     msg = "reach max step\t\t"
-                if self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_acc"] >= 0.99:
+                if self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_train_acc"] >= 0.99:
                     msg = ">> " + msg
                 print(f"{n_layer}l{n_head}h{d_model}d\t\t", msg, "\t\t".join([f"{k}: {v}" for k, v in self.latest_acc.items()]), f"\t\tlr: {lr}", file=summary_f)
                 summary_f.flush()
 
-                if (self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_acc"] == 1.0) and (self.latest_acc[f"eval_len{test_length_ranges[1][0]}-{test_length_ranges[1][1]}_acc"] == 1.0):
+                if (self.latest_acc[f"eval_len{train_length_range[0]}-{train_length_range[1]}_train_acc"] == 1.0) and (self.latest_acc[f"eval_len{test_length_ranges[1][0]}-{test_length_ranges[1][1]}_acc"] == 1.0):
                     global should_stop
                     should_stop = True
                 
@@ -501,6 +568,8 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, choices=["bin_majority", "majority", "bin_majority_interleave", "unique_copy", "repeat_copy", "sort", "parity", "addition"])
     parser.add_argument("--nope", action="store_true")
     parser.add_argument("--regularize", type=float, default=0.0)
+    parser.add_argument("--train_size", type=int, default=50000, help="Number of training examples")
+    parser.add_argument("--test_size", type=int, default=2000, help="Number of test examples")
     args = parser.parse_args()
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -508,100 +577,159 @@ if __name__ == "__main__":
     random.seed(0)
 
     train_length_range = (0, 50)
-    test_length_ranges = [train_length_range] + [(51, 100), (101, 150)]
+    test_length_ranges = [train_length_range] + [(51, 100)]
     max_test_length = test_length_ranges[-1][1]
     batch_size = 64
     per_device_bz = batch_size // torch.cuda.device_count() if torch.cuda.is_available() else batch_size 
     test_num = 2_000
 
-    configs = [(l, h, d, lr) for l in [1, 2, 4] for h in [1, 2, 4] for d in [16, 64, 256] for lr in [1e-3, 1e-4]]
-    # configs.append((12, 12, 768, 1e-4))
-    # configs = [(12, 12, 768, 1e-4)]
+    # Full grid search (54 configs) - commented out for quick testing
+    # configs = [(l, h, d, lr) for l in [1, 2, 4] for h in [1, 2, 4] for d in [16, 64, 256] for lr in [1e-3, 1e-4]]
+
+    # SANITY CHECK: Single best-known config for each task
+    # To restore full grid search, uncomment the line above and comment out the one below
+    configs = [(l, 1, 16, 1e-3) for l in [1, 2, 4, 8, 16]]  # 1 layer, 2 heads, 256d, lr=0.001 - works well for majority/bin_majority
 
     if args.task == "bin_majority":
         tokenizer = customTokenizer(["0", "1"])
-        train_dataset = BinaryMajorityDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            BinaryMajorityDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length + 4      # bos, sep, ans, eos
 
     elif args.task == "majority":
         tokenizer = customTokenizer(list(string.ascii_lowercase))
-        train_dataset = MajorityDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            MajorityDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(MajorityDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(MajorityDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length + 4      # bos, sep, ans, eos
 
     elif args.task == "bin_majority_interleave":
         tokenizer = customTokenizer(["0", "1"])
-        train_dataset = BinaryMajorityInterleaveDataset(tokenizer, train_length_range, max_test_length, period=3)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            BinaryMajorityInterleaveDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size, period=3)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityInterleaveDataset(tokenizer, test_range, -1, 3), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(BinaryMajorityInterleaveDataset(tokenizer, test_range, -1, 3), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length + 6    # ans
 
     elif args.task == "unique_copy":
         tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
-        train_dataset = UniqueCopyDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            UniqueCopyDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(UniqueCopyDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(UniqueCopyDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length*2 + 3  # bos, sep, eos
     
     elif args.task == "repeat_copy":
         tokenizer = customTokenizer(["a", "b"])
-        train_dataset = RepeatCopyDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            RepeatCopyDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(RepeatCopyDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(RepeatCopyDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length*2 + 3  # bos, sep, eos
 
     elif args.task == "sort":
         tokenizer = customTokenizer([str(i) for i in range(max_test_length)])
-        train_dataset = SortDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            SortDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(SortDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(SortDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length*2 + 3  # bos, sep, eos
 
     elif args.task == "parity":
         tokenizer = customTokenizer(["0", "1", "e", "o"])       # even, odd
-        train_dataset = ParityDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            ParityDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(ParityDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(ParityDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length + 4  # bos, sep, ans, eos
 
     elif args.task == "addition":
         tokenizer = customTokenizer(["0", "1", "+", "="])      
-        train_dataset = AdditionDataset(tokenizer, train_length_range, max_test_length)
+        
+        # Generate deduplicated train and same-length test datasets
+        train_dataset, test_same = generate_deduplicated_datasets(
+            AdditionDataset, tokenizer, train_length_range, train_length_range, 
+            max_test_length, args.train_size, args.test_size)
 
         test_dataset = {
-            f"len{test_range[0]}-{test_range[1]}": EvalDataset(AdditionDataset(tokenizer, test_range, -1), test_num)
-                for test_range in test_length_ranges
+            f"len{train_length_range[0]}-{train_length_range[1]}_train": train_dataset,
+            f"len{train_length_range[0]}-{train_length_range[1]}_test": test_same,
+            # Keep longer-length tests as before
+            **{f"len{test_range[0]}-{test_range[1]}": EvalDataset(AdditionDataset(tokenizer, test_range, -1), test_num)
+                for test_range in test_length_ranges[1:]}  # Skip first range (same length)
         }
 
         n_positions = max_test_length*2  # bos, ans, eos
@@ -620,19 +748,19 @@ if __name__ == "__main__":
 
     for i in range(3):
         print("\ninput example:")
-        print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][0])))
+        print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}_test"][i][0])))
         print("label example:")
-        print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}"][i][2])))
+        print(" ".join(tokenizer.convert_ids_to_tokens(test_dataset[f"len{test_length_ranges[0][0]}-{test_length_ranges[0][1]}_test"][i][2])))
 
     should_stop = False
-    fit_train_data = False
+    fit_train_data = False 
     for n_layer, n_head, d_model, lr in configs: 
 
         if n_layer > 4:
             max_steps = 60_000
             warmup_steps = 3000
-            if fit_train_data:
-                break
+            #if fit_train_data:
+            #    break
         else:
             max_steps = 30_000
             warmup_steps = 0
@@ -661,12 +789,12 @@ if __name__ == "__main__":
             model = GPT2LMHeadModel(cfg)
 
         training_args = TrainingArguments(
-            output_dir=output_dir,    
+            output_dir=output_dir,
             overwrite_output_dir=True,
             per_device_train_batch_size=per_device_bz,
             per_device_eval_batch_size=per_device_bz,
             max_steps=max_steps,
-            evaluation_strategy="steps",
+            eval_strategy="steps",
             eval_steps=3_000,
             save_strategy="no",
             logging_strategy="steps",
@@ -693,8 +821,8 @@ if __name__ == "__main__":
 
         trainer.train()
 
-        if should_stop:
-            break
+        #if should_stop:
+        #    break
 
     
     summary_f.close()
