@@ -1,0 +1,65 @@
+# Deep Learning and ML Libraries
+torch==2.9.1
+torchaudio==2.9.1
+torchvision==0.24.1
+transformers==4.57.3
+accelerate==1.12.0
+
+# Numeric and Data Processing
+numpy==2.2.6
+pandas
+
+# Visualization
+matplotlib
+seaborn
+
+# Configuration and Experiment Management
+hydra-core
+omegaconf
+wandb
+pydantic-settings
+python-decouple
+easydict
+
+# Utilities
+tqdm==4.67.1
+PyYAML==6.0.3
+packaging==25.0
+
+# HuggingFace and Related
+huggingface-hub==0.36.0
+tokenizers==0.22.2
+safetensors==0.7.0
+
+# System and File Utilities
+psutil==7.2.1
+filelock==3.20.2
+fsspec==2025.12.0
+
+# Web and Network
+requests==2.32.5
+urllib3==2.6.2
+certifi==2026.1.4
+charset-normalizer==3.4.4
+idna==3.11
+
+# Template and Rendering
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+
+# Math and Scientific
+sympy==1.14.0
+mpmath==1.3.0
+networkx==3.4.2
+
+# Image Processing
+pillow==12.1.0
+
+# Regular Expressions
+regex==2025.11.3
+
+# Type Hints
+typing_extensions==4.15.0
+
+# Other
+hf-xet==1.2.0
