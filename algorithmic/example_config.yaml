@@ -1,0 +1,18 @@
+data:
+  train_length_range: [10, 50]
+  test_length_ranges:
+    - [60, 70]
+    - [80, 90]
+    - [100, 110]
+  train_size: 5000
+  test_size: 2000
+
+model:
+  n_layers: [1, 2, 4]
+  n_heads: [1, 2, 4]
+  d_model: [16, 64, 256]
+
+training:
+  learning_rate: [0.001, 0.0001]
+  batch_size: 32
+  test_num: 1000

@@ -12,6 +12,7 @@ import itertools
 import os
 from collections import Counter
 from typing import Optional
+import yaml
 
 class NoPE(nn.Module):
     def __init__(self) -> None:
@@ -570,25 +571,52 @@ if __name__ == "__main__":
     parser.add_argument("--regularize", type=float, default=0.0)
     parser.add_argument("--train_size", type=int, default=50000, help="Number of training examples")
     parser.add_argument("--test_size", type=int, default=2000, help="Number of test examples")
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     args = parser.parse_args()
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     torch.manual_seed(0)
     random.seed(0)
 
-    train_length_range = (0, 50)
-    test_length_ranges = [train_length_range] + [(51, 100)]
-    max_test_length = test_length_ranges[-1][1]
-    batch_size = 64
-    per_device_bz = batch_size // torch.cuda.device_count() if torch.cuda.is_available() else batch_size 
-    test_num = 2_000
+    # Load configuration from YAML file if provided, otherwise use defaults
+    if args.config:
+        with open(args.config, 'r') as f:
+            config = yaml.safe_load(f)
 
-    # Full grid search (54 configs) - commented out for quick testing
-    # configs = [(l, h, d, lr) for l in [1, 2, 4] for h in [1, 2, 4] for d in [16, 64, 256] for lr in [1e-3, 1e-4]]
+        # Extract data configuration
+        train_length_range = tuple(config['data']['train_length_range'])
+        test_length_ranges = [train_length_range] + [tuple(r) for r in config['data']['test_length_ranges']]
+        max_test_length = test_length_ranges[-1][1]
 
-    # SANITY CHECK: Single best-known config for each task
-    # To restore full grid search, uncomment the line above and comment out the one below
-    configs = [(l, 1, 16, 1e-3) for l in [1, 2, 4, 8, 16]]  # 1 layer, 2 heads, 256d, lr=0.001 - works well for majority/bin_majority
+        # Extract training configuration
+        batch_size = config['training']['batch_size']
+        test_num = config['training']['test_num']
+
+        # Override train_size and test_size if provided in config
+        if 'train_size' in config['data']:
+            args.train_size = config['data']['train_size']
+        if 'test_size' in config['data']:
+            args.test_size = config['data']['test_size']
+
+        # Generate all combinations of model configs
+        configs = list(itertools.product(
+            config['model']['n_layers'],
+            config['model']['n_heads'],
+            config['model']['d_model'],
+            config['training']['learning_rate']
+        ))
+    else:
+        # Default configuration (backwards compatible)
+        train_length_range = (0, 50)
+        test_length_ranges = [train_length_range] + [(51, 100)]
+        max_test_length = test_length_ranges[-1][1]
+        batch_size = 64
+        test_num = 2_000
+
+        # Default configs
+        configs = [(l, 1, 16, 1e-3) for l in [1, 2, 4, 8, 16]]
+
+    per_device_bz = batch_size // torch.cuda.device_count() if torch.cuda.is_available() else batch_size
 
     if args.task == "bin_majority":
         tokenizer = customTokenizer(["0", "1"])
