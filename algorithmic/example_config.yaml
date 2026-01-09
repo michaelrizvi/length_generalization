@@ -1,18 +1,23 @@
 data:
-  train_length_range: [10, 50]
+  train_length_range: [1, 50]
   test_length_ranges:
-    - [60, 70]
-    - [80, 90]
-    - [100, 110]
-  train_size: 5000
-  test_size: 2000
+    - [51, 100]
+  # train_size can be a single value or a list for sweeping over different dataset sizes
+  train_size: [10, 30]
+  test_size: 500
 
 model:
-  n_layers: [1, 2, 4]
-  n_heads: [1, 2, 4]
-  d_model: [16, 64, 256]
+  n_layers: [1]
+  n_heads: [1]
+  d_model: [64]
 
 training:
-  learning_rate: [0.001, 0.0001]
-  batch_size: 32
-  test_num: 1000
+  learning_rate: [0.001]
+  batch_size: 64
+  test_num: 500
+  # Number of independent runs for each configuration (default: 1)
+  # Each run uses different random seeds for data generation and model initialization
+  n_runs: 10
+  # Base seed for reproducibility (default: 0)
+  # Run i will use seeds: base_seed + i, 2*(base_seed + i), 2*(base_seed + i) + 1
+  base_seed: 0 
