@@ -7,7 +7,7 @@ data:
   test_size: 50
 
 model:
-  n_layers: [1,2]
+  n_layers: [1, 2]
   n_heads: [1]
   d_model: [64]
 
@@ -20,4 +20,4 @@ training:
   n_runs: 1
   # Base seed for reproducibility (default: 0)
   # Run i will use seeds: base_seed + i, 2*(base_seed + i), 2*(base_seed + i) + 1
-  base_seed: 0 
+  base_seed: 0
