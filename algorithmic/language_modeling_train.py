@@ -865,7 +865,9 @@ if __name__ == "__main__":
                 max_steps=max_steps,
                 eval_strategy="steps",
                 eval_steps=3_000,
-                save_strategy="no",
+                save_strategy="steps",
+                save_steps=max_steps,
+                save_total_limit=1,
                 logging_strategy="steps",
                 logging_steps=3_000,
                 learning_rate=lr,
@@ -891,6 +893,11 @@ if __name__ == "__main__":
             )
 
             trainer.train()
+
+            # Save the final model checkpoint after training completes
+            # This ensures the model is saved even if early stopping occurs before max_steps
+            trainer.save_model(output_dir)
+            print(f"Model saved to: {output_dir}")
 
             # Evaluate on all test sets and collect results
             run_results = {}

@@ -13,6 +13,9 @@ pandas
 matplotlib
 seaborn
 
+# Hessian Analysis
+pyhessian
+
 # Configuration and Experiment Management
 hydra-core
 omegaconf

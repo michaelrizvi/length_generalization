@@ -3,11 +3,11 @@ data:
   test_length_ranges:
     - [51, 100]
   # train_size can be a single value or a list for sweeping over different dataset sizes
-  train_size: [10, 30]
-  test_size: 50
+  train_size: [10000]
+  test_size: 500
 
 model:
-  n_layers: [1, 2]
+  n_layers: [2]
   n_heads: [1]
   d_model: [64]
 
