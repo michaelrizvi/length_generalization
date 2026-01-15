@@ -834,7 +834,7 @@ if __name__ == "__main__":
             torch.manual_seed(model_seed)
             random.seed(model_seed)
 
-            output_dir = f"{n_layer}l{n_head}h{d_model}d_n{train_size}_run{run_idx}{'smalllr' if lr == 1e-4 else ''}{suffix}"
+            output_dir = f"{n_layer}l{n_head}h{d_model}d_n{train_size}_len{train_length_range[0]}-{train_length_range[1]}_run{run_idx}{'smalllr' if lr == 1e-4 else ''}{suffix}"
             output_dir = os.path.join(task_path, output_dir)
 
             cfg = GPT2Config(vocab_size=len(tokenizer),
