@@ -31,6 +31,7 @@ import numpy as np
 import os
 import re
 import gc
+import pandas as pd
 from pathlib import Path
 
 from utils import (
@@ -205,6 +206,120 @@ def plot_esd_overlay(all_results, output_path, title=""):
     print(f"    ESD overlay plot saved to: {output_path}")
 
 
+def export_comparison_eigenvalues_to_csv(all_model_results, output_path):
+    """
+    Export top eigenvalues from all models to CSV for comparison.
+
+    Creates a DataFrame with eigenvalue rank and values from each model.
+
+    Args:
+        all_model_results: Dict mapping model paths to results dicts
+        output_path: Path to save CSV
+    """
+    # Get max number of eigenvalues
+    max_eigenvalues = max(len(data['results']['top_eigenvalues']) 
+                         for data in all_model_results.values())
+    
+    # Initialize data dictionary with rank
+    data = {
+        'rank': list(range(1, max_eigenvalues + 1))
+    }
+    
+    # Add eigenvalues from each model, sorted by train range
+    sorted_models = sorted(all_model_results.items(), key=lambda x: x[1]['train_range'])
+    for model_path, model_data in sorted_models:
+        train_range = model_data['train_range']
+        eigenvalues = model_data['results']['top_eigenvalues']
+        
+        # Create column name with train range
+        col_name = f"len_{train_range[0]}-{train_range[1]}"
+        
+        # Pad with NaN if this model has fewer eigenvalues
+        padded_eigenvalues = list(eigenvalues) + [np.nan] * (max_eigenvalues - len(eigenvalues))
+        data[col_name] = padded_eigenvalues
+    
+    # Create DataFrame and save
+    df = pd.DataFrame(data)
+    df.to_csv(output_path, index=False)
+    print(f"  Comparison eigenvalues CSV saved to: {output_path}")
+
+
+def export_comparison_esd_to_csv(all_model_results, output_path):
+    """
+    Export eigenvalue spectral density from all models to CSV for comparison.
+
+    Creates a DataFrame with eigenvalues and their corresponding density weights
+    from each model.
+
+    Args:
+        all_model_results: Dict mapping model paths to results dicts
+        output_path: Path to save CSV
+    """
+    # Collect all eigenvalues across all models to create a unified eigenvalue axis
+    all_eigenvalues = set()
+    processed_data = {}
+    
+    sorted_models = sorted(all_model_results.items(), key=lambda x: x[1]['train_range'])
+    
+    for model_path, model_data in sorted_models:
+        train_range = model_data['train_range']
+        density_eigen = model_data['results']['density_eigen']
+        density_weight = model_data['results']['density_weight']
+        
+        # Process the density data (handle list of lists or flat arrays)
+        if isinstance(density_eigen, list) and len(density_eigen) > 0 and isinstance(density_eigen[0], list):
+            # Multiple runs - compute mean
+            all_eigen_vals = []
+            all_weights = []
+            
+            for eigen_vals, weights in zip(density_eigen, density_weight):
+                sorted_pairs = sorted(zip(eigen_vals, weights), key=lambda x: x[0])
+                all_eigen_vals.append([x[0] for x in sorted_pairs])
+                all_weights.append([x[1] for x in sorted_pairs])
+            
+            # Convert to numpy arrays for averaging
+            all_eigen_vals_np = np.array(all_eigen_vals)
+            all_weights_np = np.array(all_weights)
+            
+            # Compute mean eigenvalues and weights across runs
+            mean_eigen = np.mean(all_eigen_vals_np, axis=0)
+            mean_weight = np.mean(all_weights_np, axis=0)
+            
+            eigen_vals_sorted = mean_eigen
+            weights_sorted = mean_weight
+        else:
+            # Single flat array - sort as well
+            sorted_pairs = sorted(zip(density_eigen, density_weight), key=lambda x: x[0])
+            eigen_vals_sorted = np.array([x[0] for x in sorted_pairs])
+            weights_sorted = np.array([x[1] for x in sorted_pairs])
+        
+        col_name = f"len_{train_range[0]}-{train_range[1]}"
+        processed_data[col_name] = {
+            'eigenvalues': eigen_vals_sorted,
+            'weights': weights_sorted
+        }
+        all_eigenvalues.update(eigen_vals_sorted)
+    
+    # Create unified eigenvalue axis (sorted)
+    unified_eigenvalues = sorted(list(all_eigenvalues))
+    
+    # Create DataFrame with interpolation for alignment
+    data = {'eigenvalue': unified_eigenvalues}
+    
+    for col_name in sorted(processed_data.keys()):
+        # Create a mapping from eigenvalue to weight for this model
+        eigen_weight_dict = dict(zip(processed_data[col_name]['eigenvalues'], 
+                                     processed_data[col_name]['weights']))
+        # Map to unified eigenvalue axis, using NaN for missing values
+        weights = [eigen_weight_dict.get(ev, np.nan) for ev in unified_eigenvalues]
+        data[f'density_weight_{col_name}'] = weights
+    
+    # Create DataFrame and save
+    df = pd.DataFrame(data)
+    df.to_csv(output_path, index=False)
+    print(f"  Comparison ESD CSV saved to: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot Hessian analysis for multiple model checkpoints on training set",
@@ -262,8 +377,10 @@ Examples:
     print(f"Task: {args.task}")
     print(f"Output directory: {args.output_dir}")
 
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    # Create output directory with task subdirectory
+    task_output_dir = os.path.join(args.output_dir, args.task)
+    os.makedirs(task_output_dir, exist_ok=True)
+    print(f"Results will be saved to: {task_output_dir}")
 
     # Collect results for all models
     all_model_results = {}
@@ -361,7 +478,7 @@ Examples:
         first_config = list(all_model_results.values())[0]['config']
         
         # Plot ESD overlay
-        esd_path = os.path.join(args.output_dir, f"esd_comparison.pdf")
+        esd_path = os.path.join(task_output_dir, f"esd_comparison.pdf")
         print(f"\nGenerating ESD comparison plot...")
         plot_esd_overlay(
             all_model_results,
@@ -370,13 +487,25 @@ Examples:
         )
 
         # Plot top eigenvalues overlay
-        eigenval_path = os.path.join(args.output_dir, f"top_eigenvalues_comparison.pdf")
+        eigenval_path = os.path.join(task_output_dir, f"top_eigenvalues_comparison.pdf")
         print(f"Generating top eigenvalues comparison plot...")
         plot_top_k_eigenvalues_overlay(
             all_model_results,
             eigenval_path,
             title=f"{first_config} - Multiple Training Lengths"
         )
+
+    # Export data to CSV
+    print(f"\n{'='*80}")
+    print("Exporting Comparison Data to CSV")
+    print(f"{'='*80}\n")
+    
+    if all_model_results:
+        eigenvalues_csv_path = os.path.join(task_output_dir, "comparison_eigenvalues.csv")
+        export_comparison_eigenvalues_to_csv(all_model_results, eigenvalues_csv_path)
+        
+        esd_csv_path = os.path.join(task_output_dir, "comparison_esd.csv")
+        export_comparison_esd_to_csv(all_model_results, esd_csv_path)
 
     # Print final summary
     print(f"\n{'='*80}")
@@ -399,7 +528,10 @@ Examples:
     print(f"Output plots:")
     print(f"  - esd_comparison.pdf")
     print(f"  - top_eigenvalues_comparison.pdf")
-    print(f"\nAll results saved to: {args.output_dir}")
+    print(f"\nOutput CSV files:")
+    print(f"  - comparison_eigenvalues.csv")
+    print(f"  - comparison_esd.csv")
+    print(f"\nAll results saved to: {task_output_dir}")
     print(f"Total models analyzed: {len(all_model_results)}/{len(args.model_paths)}")
     print("\n" + "="*80)
     print("Analysis Complete!")

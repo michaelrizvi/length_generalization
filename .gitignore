@@ -178,3 +178,4 @@ lm-*
 figures/
 hessian_results/
 *.sh
+slurm-*

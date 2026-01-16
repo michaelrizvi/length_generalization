@@ -461,7 +461,7 @@ def compute_hessian_metrics(model, dataloader, device='cuda', verbose=True, seed
         if verbose:
             print("  Computing eigenvalue spectral density...")
 
-        density_eigen, density_weight = hessian_comp.density(iter=150, n_v=10)
+        density_eigen, density_weight = hessian_comp.density(iter=100, n_v=5)
 
         result = {
             'top_eigenvalues': top_eigenvalues,
